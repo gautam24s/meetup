@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebRTC Video Call</title>
+    <script>
+        let peerConnection;
+        let localStream;
+        let socket;
+        const udpServer = "localhost";
+        const udpPort = 8080;
+
+        function connectWebSocket() {
+            socket = new WebSocket(`ws://${udpServer}:${udpPort}/ws`);
+            socket.onmessage = event => handleSignal(event);
+        }
+        connectWebSocket();
+
+        async function startCall() {
+            peerConnection = new RTCPeerConnection({
+                iceServers: [
+                    {
+                        urls: ["stun:bn-turn2.xirsys.com"]
+                    },
+                    {
+                        username: "2LX9iv6rtQnmHf0ADXPLaXXU_pMp8gZH9NYXgH6dIcMP7b81qEwVl7C6VyevuNZEAAAAAGeA0IN1bmZpeGJ1Zw==",
+                        credential: "1bfd73d6-cf27-11ef-a8c3-0242ac140004",
+                        urls: [
+                            "turn:bn-turn2.xirsys.com:80?transport=udp",
+                            "turn:bn-turn2.xirsys.com:3478?transport=udp",
+                            "turn:bn-turn2.xirsys.com:80?transport=tcp",
+                            "turn:bn-turn2.xirsys.com:3478?transport=tcp",
+                            "turns:bn-turn2.xirsys.com:443?transport=tcp",
+                            "turns:bn-turn2.xirsys.com:5349?transport=tcp",
+                        ]
+                    },
+                ]
+            });
+
+            peerConnection.onicecandidate = event => {
+                if (event.candidate) {
+                    sendSignal({ type: "candidate", candidate: JSON.stringify(event.candidate) });
+                }
+            };
+
+            peerConnection.ontrack = event => {
+                document.getElementById("remoteVideo").srcObject = event.streams[0];
+            };
+
+            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            document.getElementById("localVideo").srcObject = localStream;
+
+            peerConnection.addTransceiver('video', {
+                direction: 'sendrecv',
+            })
+
+            peerConnection.addTransceiver('audio', {
+                direction: 'sendrecv',
+            })
+
+            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+            sendSignal({ type: "offer", sdp: offer.sdp });
+            console.log("offer sent")
+        }
+
+        function sendSignal(data) {
+            if (socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify(data));
+            }
+        }
+
+        function handleSignal(event) {
+            const data = JSON.parse(event.data);
+            if (data.type === "offer") {
+                peerConnection.setRemoteDescription(new RTCSessionDescription({ type: "offer", sdp: data.sdp }));
+                peerConnection.createAnswer().then(answer => {
+                    peerConnection.setLocalDescription(answer);
+                    sendSignal({ type: "answer", sdp: answer.sdp });
+                });
+            } else if (data.type === "answer") {
+                peerConnection.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp: data.sdp }));
+            } else if (data.type === "candidate") {
+                peerConnection.addIceCandidate(new RTCIceCandidate(JSON.parse(data.candidate)));
+            }
+        }
+    </script>
+</head>
+
+<body>
+    <h2>WebRTC Video Call</h2>
+    <video id="localVideo" autoplay playsinline muted></video>
+    <video id="remoteVideo" autoplay playsinline></video>
+    <br>
+    <button onclick="startCall()">Start Call</button>
+</body>
+
+</html>
