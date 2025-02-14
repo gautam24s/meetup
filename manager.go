@@ -42,5 +42,5 @@ func (m *Manager) CreateRoomID() string {
 	return GenerateID(16)
 }
 
-func (m *Manager) NewRoom(id, name, roomType string, opts RoomOptions) (*Room, error) {
-}
+// func (m *Manager) NewRoom(id, name, roomType string, opts RoomOptions) (*Room, error) {
+// }

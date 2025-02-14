@@ -132,6 +132,14 @@ type Client struct {
 	log                            logging.LeveledLogger
 }
 
+func (c *Client) ID() string {
+	return c.id
+}
+
+func (c *Client) Name() string {
+	return c.name
+}
+
 func registerInterceptors(m *webrtc.MediaEngine, interceptorRegistry *interceptor.Registry) error {
 	generator, err := nack.NewGeneratorInterceptor()
 	if err != nil {
