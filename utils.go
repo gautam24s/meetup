@@ -4,6 +4,13 @@ import (
 	"errors"
 
 	"github.com/jaevor/go-nanoid"
+	"github.com/pion/sdp/v3"
+	"github.com/pion/webrtc/v4"
+)
+
+const (
+	SdesRepairRTPStreamIDURI = "urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id"
+	uint16SizeHalf           = uint16(1 << 15)
 )
 
 var customChars = [62]byte{
@@ -41,4 +48,16 @@ func GenerateID(length int) string {
 		panic(err)
 	}
 	return canonicID()
+}
+
+func RegisterSimulcastHeaderExtensions(m *webrtc.MediaEngine, codecType webrtc.RTPCodecType) {
+	for _, extension := range []string{
+		sdp.SDESMidURI,
+		sdp.SDESRTPStreamIDURI,
+		SdesRepairRTPStreamIDURI,
+	} {
+		if err := m.RegisterHeaderExtension(webrtc.RTPHeaderExtensionCapability{URI: extension}, codecType); err != nil {
+			panic(err)
+		}
+	}
 }

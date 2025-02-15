@@ -148,3 +148,19 @@ func RegisterCodecs(m *webrtc.MediaEngine, codecs []string) error {
 
 	return FlattenErrors(errors)
 }
+
+func getRTPParameters(mimeType string) webrtc.RTPCodecParameters {
+	for _, codec := range audioCodecs {
+		if codec.RTPCodecCapability.MimeType == mimeType {
+			return codec
+		}
+	}
+
+	for _, codec := range videoCodecs {
+		if codec.RTPCodecCapability.MimeType == mimeType {
+			return codec
+		}
+	}
+
+	return webrtc.RTPCodecParameters{}
+}

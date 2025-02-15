@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pion/logging"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -104,9 +105,74 @@ type SFU struct {
 	cancel         context.CancelFunc
 	codecs         []string
 	// dataChannels   *SFUDataChannelList
-	iceServers  []webrtc.ICEServer
-	mu          sync.Mutex
-	onStop      func()
-	pliInterval time.Duration
-	onTracksAvailableCallbacks []func()
+	iceServers                 []webrtc.ICEServer
+	mu                         sync.Mutex
+	onStop                     func()
+	pliInterval                time.Duration
+	onTracksAvailableCallbacks []func(tracks ITrack)
+	onClientRemovedCallbacks   []func(*Client)
+	onClientAddedCallbacks     []func(*Client)
+	relayTracks                map[string]ITrack
+	// clientStats                map[string]*ClientStats
+	log                  logging.LeveledLogger
+	defaultSettingEngine *webrtc.SettingEngine
+}
+
+type PublishedTrack struct {
+	ClientID string
+	Track    webrtc.TrackLocal
+}
+
+type sfuOptions struct {
+	IceServers    []webrtc.ICEServer
+	Bitrates      BitrateConfigs
+	QualityLevel  []QualityLevel
+	Codecs        []string
+	PLIInterval   time.Duration
+	Log           logging.LeveledLogger
+	SettingEngine *webrtc.SettingEngine
+}
+
+func New(ctx context.Context, opts sfuOptions) *SFU {
+	localCtx, cancel := context.WithCancel(ctx)
+
+	sfu := &SFU{
+		clients:                    &SFUClients{clients: make(map[string]*Client), mu: sync.Mutex{}},
+		context:                    localCtx,
+		cancel:                     cancel,
+		codecs:                     opts.Codecs,
+		iceServers:                 opts.IceServers,
+		mu:                         sync.Mutex{},
+		bitrateConfigs:             opts.Bitrates,
+		pliInterval:                opts.PLIInterval,
+		relayTracks:                make(map[string]ITrack),
+		onTracksAvailableCallbacks: make([]func(tracks ITrack), 0),
+		onClientRemovedCallbacks:   make([]func(*Client), 0),
+		onClientAddedCallbacks:     make([]func(*Client), 0),
+		log:                        opts.Log,
+		defaultSettingEngine:       opts.SettingEngine,
+	}
+
+	return sfu
+}
+
+func (s *SFU) addClient(client *Client) {
+	if err := s.clients.Add(client); err != nil {
+		s.log.Errorf("sfu: failed to add client ", err)
+		return
+	}
+
+	s.onClientAdded(client)
+}
+
+func (s *SFU) onClientAdded(client *Client) {
+	for _, callback := range s.onClientAddedCallbacks {
+		callback(client)
+	}
+}
+
+func (s *SFU) onClientRemoved(client *Client) {
+	for _, callback := range s.onClientRemovedCallbacks {
+		callback(client)
+	}
 }

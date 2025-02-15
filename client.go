@@ -10,6 +10,7 @@ import (
 	"github.com/gautam24s/meetup/pkg/interceptors/voiceactivedetector"
 	"github.com/pion/interceptor"
 	"github.com/pion/interceptor/pkg/cc"
+	"github.com/pion/interceptor/pkg/gcc"
 	"github.com/pion/interceptor/pkg/nack"
 	"github.com/pion/logging"
 	"github.com/pion/webrtc/v4"
@@ -83,12 +84,15 @@ func DefaultClientOptions() ClientOptions {
 }
 
 type Client struct {
-	id              string
-	name            string
-	context         context.Context
-	cancel          context.CancelFunc
-	canAddCandidate *atomic.Bool
-	muTracks        sync.Mutex
+	id                  string
+	name                string
+	bitrateController   *bitrateController
+	context             context.Context
+	cancel              context.CancelFunc
+	canAddCandidate     *atomic.Bool
+	clientTracks        map[string]iClientTrack
+	muTracks            sync.Mutex
+	internalDataChannel *webrtc.DataChannel
 
 	estimator             cc.BandwidthEstimator
 	initialReceiverCount  atomic.Int32
@@ -132,12 +136,99 @@ type Client struct {
 	log                            logging.LeveledLogger
 }
 
+func NewClient(s *SFU, id string, name string, peerConnectionConfig webrtc.Configuration, opts ClientOptions) {
+	var client *Client
+	var vadInterceptor *voiceactivedetector.Interceptor
+
+	localCtx, cancel := context.WithCancel(s.context)
+	m := &webrtc.MediaEngine{}
+
+	opts.settingEngine.EnableSCTPZeroChecksum(true)
+
+	if err := RegisterCodecs(m, s.codecs); err != nil {
+		panic(err)
+	}
+
+	RegisterSimulcastHeaderExtensions(m, webrtc.RTPCodecTypeVideo)
+
+	if opts.EnableVoiceDetection {
+		voiceactivedetector.RegisterAudioLevelHeaderExtension(m)
+	}
+
+	i := &interceptor.Registry{}
+
+	var vads = make(map[uint32]*voiceactivedetector.VoiceDetector)
+
+	if opts.EnableVoiceDetection {
+		opts.Log.Infof("client: voice detection is enabled")
+		vadInterceptorFactory := voiceactivedetector.NewInterceptor(localCtx, opts.Log)
+
+		vadInterceptorFactory.OnNew(func(i *voiceactivedetector.Interceptor) {
+			vadInterceptor = i
+			i.OnNewVAD(func(vad *voiceactivedetector.VoiceDetector) {
+				vads[vad.SSRC()] = vad
+			})
+		})
+
+		i.Add(vadInterceptorFactory)
+	}
+
+	estimatorChan := make(chan cc.BandwidthEstimator, 1)
+
+	congestionController, err := cc.NewInterceptor(func() (cc.BandwidthEstimator, error) {
+		return gcc.NewSendSideBWE(
+			gcc.SendSideBWEInitialBitrate(int(s.bitrateConfigs.InitialBandwith)),
+			gcc.SendSideBWEPacer(gcc.NewNoOpPacer()),
+		)
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	congestionController.OnNewPeerConnection(func(id string, estimator cc.BandwidthEstimator) {
+		estimatorChan <- estimator
+	})
+
+	i.Add(congestionController)
+
+	if err = webrtc.ConfigureTWCCHeaderExtensionSender(m, i); err != nil {
+		panic(err)
+	}
+
+	if err := registerInterceptors(m, i); err != nil {
+		panic(err)
+	}
+
+	peerConnection, err := webrtc.NewAPI(webrtc.WithMediaEngine(m), webrtc.WithSettingEngine(opts.settingEngine), webrtc.WithInterceptorRegistry(i)).NewPeerConnection(peerConnectionConfig)
+	if err != nil {
+		panic(err)
+	}
+
+	var stateNew atomic.Value
+	stateNew.Store(ClientStateNew)
+
+	var quality atomic.Uint32
+
+	quality.Store(QualityHigh)
+
+	client = &Client{
+		id:      id,
+		name:    name,
+		context: localCtx,
+		cancel:  cancel,
+	}
+}
+
 func (c *Client) ID() string {
 	return c.id
 }
 
 func (c *Client) Name() string {
 	return c.name
+}
+
+func (c *Client) Context() context.Context {
+	return c.context
 }
 
 func registerInterceptors(m *webrtc.MediaEngine, interceptorRegistry *interceptor.Registry) error {
@@ -161,4 +252,13 @@ func registerInterceptors(m *webrtc.MediaEngine, interceptorRegistry *intercepto
 	}
 
 	return webrtc.ConfigureTWCCSender(m, interceptorRegistry)
+}
+
+func (c *Client) GetEstimatedBandwith() uint32 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.estimator == nil {
+		return c.sfu
+	}
 }
